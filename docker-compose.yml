@@ -75,6 +75,9 @@ services:
       - ./volumes/temporal-dynamicconfig:/etc/temporal/config/dynamicconfig
     labels:
       kompose.volume.type: configMap
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      
 
   temporal-admin-tools:
     container_name: temporal-admin-tools
