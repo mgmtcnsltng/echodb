@@ -1,0 +1,535 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "peers.proto";
+
+package peerdb_flow;
+
+message AlertInput {
+  string flow_name = 1;
+  string message = 2;
+}
+
+message TableNameMapping {
+  string source_table_name = 1;
+  string destination_table_name = 2;
+}
+
+message ColumnSetting {
+  string source_name = 1;
+  string destination_name = 2;
+  string destination_type = 3;
+  int32 ordering = 4;
+  bool nullable_enabled = 5;
+}
+
+message TableMapping {
+  string source_table_identifier = 1;
+  string destination_table_identifier = 2;
+  string partition_key = 3;
+  repeated string exclude = 4;
+  repeated ColumnSetting columns = 5;
+  TableEngine engine = 6;
+}
+
+message SetupInput {
+  map<string, string> env = 1;
+  string flow_name = 2;
+  string peer_name = 3;
+}
+
+message FlowConnectionConfigs {
+  reserved 2,3,17;
+  string flow_job_name = 1;
+
+  // config for the CDC flow itself
+  // currently, TableMappings, MaxBatchSize and IdleTimeoutSeconds are dynamic via Temporal signals
+  repeated TableMapping table_mappings = 4;
+  uint32 max_batch_size = 5;
+  uint64 idle_timeout_seconds = 6;
+  string cdc_staging_path = 7;
+  string publication_name = 8;
+  string replication_slot_name = 9;
+
+  // config for the initial load feature, along with interactions like resync and initial_snapshot_only
+  bool do_initial_snapshot = 10;
+  uint32 snapshot_num_rows_per_partition = 11;
+  string snapshot_staging_path = 12;
+  // max parallel workers is per table
+  uint32 snapshot_max_parallel_workers = 13;
+  uint32 snapshot_num_tables_in_parallel = 14;
+  // if true, then the flow will be resynced
+  // create new tables with "_resync" suffix, perform initial load and then swap the new tables with the old ones
+  // to only be used after the old mirror is dropped
+  bool resync = 15;
+  bool initial_snapshot_only = 16;
+
+  // configurations for soft delete and synced at columns, affects both initial snapshot and CDC
+  string soft_delete_col_name = 18;
+  string synced_at_col_name = 19;
+
+  string script = 20;
+  TypeSystem system = 21;
+
+  // source and destination peer
+  string source_name = 22;
+  string destination_name = 23;
+
+  map<string, string> env = 24;
+}
+
+message RenameTableOption {
+  string current_name = 1;
+  string new_name = 2;
+}
+
+message RenameTablesInput {
+  reserved 2,4,5;
+  string flow_job_name = 1;
+  repeated RenameTableOption rename_table_options = 3;
+  string peer_name = 6;
+  string soft_delete_col_name = 7;
+  string synced_at_col_name = 8;
+}
+
+message RemoveTablesFromRawTableInput {
+  string flow_job_name = 1;
+  repeated string destination_table_names = 2;
+  int64 sync_batch_id = 3;
+  int64 normalize_batch_id = 4;
+}
+
+message RenameTablesOutput {
+  string flow_job_name = 1;
+}
+
+message CreateTablesFromExistingInput {
+  string flow_job_name = 1;
+  map<string, string> new_to_existing_table_mapping = 3;
+  string peer_name = 4;
+}
+
+message CreateTablesFromExistingOutput {
+  string flow_job_name = 2;
+}
+
+message SyncFlowOptions {
+  reserved 5;
+  uint32 batch_size = 1;
+  uint64 idle_timeout_seconds = 3;
+  map<uint32, string> src_table_id_name_mapping = 4;
+  repeated TableMapping table_mappings = 6;
+  int32 number_of_syncs = 7;
+}
+
+message EnsurePullabilityBatchInput {
+  string flow_job_name = 2;
+  repeated string source_table_identifiers = 3;
+  bool check_constraints = 4;
+  string peer_name = 5;
+}
+
+message PostgresTableIdentifier {
+  uint32 rel_id = 1;
+}
+
+message EnsurePullabilityBatchOutput {
+  map<string, PostgresTableIdentifier> table_identifier_mapping = 1;
+}
+
+message SetupReplicationInput {
+  string flow_job_name = 2;
+  map<string, string> table_name_mapping = 3;
+  map<string, string> env = 4;
+
+  // replicate to destination using ctid
+  bool do_initial_snapshot = 5;
+  string existing_publication_name = 6;
+  string existing_replication_slot_name = 7;
+  string peer_name = 8;
+  string destination_name = 9;
+}
+
+message SetupReplicationOutput {
+  string slot_name = 1;
+  string snapshot_name = 2;
+  bool supports_tid_scans = 3;
+}
+
+message CreateRawTableInput {
+  string flow_job_name = 2;
+  map<string, string> table_name_mapping = 3;
+  string peer_name = 4;
+}
+
+message CreateRawTableOutput { string table_identifier = 1; }
+
+// stored in catalog table table_schema_mapping, be wary of breaking changes
+message TableSchema {
+  string table_identifier = 1;
+  repeated string primary_key_columns = 2;
+  bool is_replica_identity_full = 3;
+  TypeSystem system = 4;
+  bool nullable_enabled = 5;
+  repeated FieldDescription columns = 6;
+}
+
+message FieldDescription {
+  string name = 1;
+  string type = 2;
+  int32 type_modifier = 3;
+  bool nullable = 4;
+}
+
+message SetupTableSchemaBatchInput {
+  reserved 2;
+  map<string, string> env = 1;
+  string flow_name = 3;
+  TypeSystem system = 4;
+  string peer_name = 5;
+  repeated TableMapping table_mappings = 6;
+}
+
+message SetupNormalizedTableBatchInput {
+  map<string, string> env = 1;
+  repeated TableMapping table_mappings = 3;
+
+  // migration related columns
+  string soft_delete_col_name = 4;
+  string synced_at_col_name = 5;
+  string flow_name = 6;
+  string peer_name = 7;
+  bool is_resync = 8;
+}
+
+message SetupNormalizedTableOutput {
+  string table_identifier = 1;
+  bool already_exists = 2;
+}
+
+message SetupNormalizedTableBatchOutput {
+  map<string, bool> table_exists_mapping = 1;
+}
+
+// partition ranges [start, end] inclusive
+message IntPartitionRange {
+  int64 start = 1;
+  int64 end = 2;
+}
+
+message TimestampPartitionRange {
+  google.protobuf.Timestamp start = 1;
+  google.protobuf.Timestamp end = 2;
+}
+
+message TID {
+  uint32 block_number = 1;
+  uint32 offset_number = 2;
+}
+
+message TIDPartitionRange {
+  TID start = 1;
+  TID end = 2;
+}
+
+message PartitionRange {
+  // can be a timestamp range or an integer range
+  oneof range {
+    IntPartitionRange int_range = 1;
+    TimestampPartitionRange timestamp_range = 2;
+    TIDPartitionRange tid_range = 3;
+  }
+}
+
+enum TableEngine {
+  CH_ENGINE_REPLACING_MERGE_TREE = 0;
+  CH_ENGINE_MERGE_TREE = 1;
+  CH_ENGINE_NULL = 2;
+}
+
+// protos for qrep
+enum QRepWriteType {
+  QREP_WRITE_MODE_APPEND = 0;
+  QREP_WRITE_MODE_UPSERT = 1;
+  // only valid when initial_copy_true is set to true. TRUNCATES tables before reverting to APPEND.
+  QREP_WRITE_MODE_OVERWRITE = 2;
+}
+
+message QRepWriteMode {
+  QRepWriteType write_type = 1;
+  repeated string upsert_key_columns = 2;
+}
+
+enum TypeSystem {
+  Q = 0;
+  PG = 1;
+}
+
+message QRepConfig {
+  string flow_job_name = 1;
+
+  string destination_table_identifier = 4;
+
+  string query = 5;
+
+  string watermark_table = 6;
+  string watermark_column = 7;
+
+  bool initial_copy_only = 8;
+
+  uint32 max_parallel_workers = 9;
+
+  // time to wait between getting partitions to process
+  uint32 wait_between_batches_seconds = 10;
+
+  QRepWriteMode write_mode = 11;
+
+  // This is only used when sync_mode is AVRO
+  // this is the location where the avro files will be written
+  // if this starts with gs:// then it will be written to GCS
+  // if this starts with s3:// then it will be written to S3, only supported in Snowflake
+  // if nothing is specified then it will be written to local disk
+  // if using GCS or S3 make sure your instance has the correct permissions.
+  string staging_path = 12;
+
+  // This setting overrides batch_size_int and batch_duration_seconds
+  // and instead uses the number of rows per partition to determine
+  // how many rows to process per batch.
+  uint32 num_rows_per_partition = 13;
+
+  // Creates the watermark table on the destination as-is, can be used for some queries.
+  bool setup_watermark_table_on_destination = 14;
+
+  // create new tables with "_peerdb_resync" suffix, perform initial load and then swap the new table with the old ones
+  // to be used after the old mirror is dropped
+  bool dst_table_full_resync = 15;
+
+  string synced_at_col_name = 16;
+  string soft_delete_col_name = 17;
+
+  TypeSystem system = 18;
+  string script = 19;
+
+  string source_name = 20;
+  string destination_name = 21;
+  string snapshot_name = 23;
+
+  map<string, string> env = 24;
+
+  string parent_mirror_name = 25;
+  repeated string exclude = 26;
+}
+
+message QRepPartition {
+  string partition_id = 2;
+  PartitionRange range = 3;
+  bool full_table_partition = 4;
+}
+
+message QRepPartitionBatch {
+  int32 batch_id = 1;
+  repeated QRepPartition partitions = 2;
+}
+
+message QRepParitionResult {
+  repeated QRepPartition partitions = 1;
+}
+
+message DropFlowInput {
+  reserved 2,3;
+  string flow_job_name = 1;
+  bool drop_flow_stats = 4;
+  FlowConnectionConfigs flow_connection_configs = 5;
+  bool skip_destination_drop = 6;
+  bool skip_source_drop = 7;
+  bool resync = 8;
+}
+
+message TableSchemaDelta {
+  string src_table_name = 1;
+  string dst_table_name = 2;
+  repeated FieldDescription added_columns = 3;
+  TypeSystem system = 4;
+  bool nullable_enabled = 5;
+}
+
+message QRepFlowState {
+  QRepPartition last_partition = 1;
+  uint64 num_partitions_processed = 2;
+  bool needs_resync = 3;
+  FlowStatus current_flow_status = 5;
+}
+
+message PeerDBColumns {
+  reserved 3;
+  string soft_delete_col_name = 1;
+  string synced_at_col_name = 2;
+}
+
+message GetOpenConnectionsForUserResult {
+  string user_name = 1;
+  int64 current_open_connections = 2;
+}
+
+// UI reads current workflow status and also requests status changes using same enum
+// see flow/cmd/handler.go FlowStateChange
+enum FlowStatus {
+  // should never be read by UI, bail
+  STATUS_UNKNOWN = 0;
+  // enable pause and terminate buttons
+  STATUS_RUNNING = 1;
+  // pause button becomes resume button
+  STATUS_PAUSED = 2;
+  STATUS_PAUSING = 3;
+  // not reachable in QRep mirrors
+  STATUS_SETUP = 4;
+  // not reachable in QRep mirrors
+  STATUS_SNAPSHOT = 5;
+  STATUS_TERMINATING = 6;
+  STATUS_TERMINATED = 7;
+  STATUS_COMPLETED = 8;
+  STATUS_RESYNC = 9;
+}
+
+message CDCFlowConfigUpdate {
+  repeated TableMapping additional_tables = 1;
+  uint32 batch_size = 2;
+  uint64 idle_timeout = 3;
+  int32 number_of_syncs = 4;
+  repeated TableMapping removed_tables = 5;
+  // updates keys in the env map, existing keys left unchanged
+  map<string, string> updated_env = 6;
+}
+
+message QRepFlowConfigUpdate {
+}
+
+message FlowConfigUpdate {
+  oneof update {
+    CDCFlowConfigUpdate cdc_flow_config_update = 1;
+    QRepFlowConfigUpdate qrep_flow_config_update = 2;
+  }
+}
+
+message SetupFlowOutput {
+  map<uint32, string> src_table_id_name_mapping = 1;
+}
+
+message AddTablesToPublicationInput {
+  string flow_job_name = 1;
+  string publication_name = 2;
+  repeated TableMapping additional_tables = 3;
+}
+
+message RemoveTablesFromPublicationInput {
+  string flow_job_name = 1;
+  string publication_name = 2;
+  repeated TableMapping tables_to_remove = 3;
+}
+
+message IsQRepPartitionSyncedInput {
+  string flow_job_name = 1;
+  string partition_id = 2;
+}
+
+message ExportTxSnapshotOutput {
+  string snapshot_name = 1;
+  bool supports_tid_scans = 2;
+}
+
+enum DynconfValueType {
+  UNKNOWN = 0;
+  STRING = 1;
+  INT = 2;
+  UINT = 3;
+  BOOL = 4;
+}
+
+enum DynconfApplyMode {
+  APPLY_MODE_UNKNOWN = 0;
+  // should apply immediately
+  APPLY_MODE_IMMEDIATE = 1;
+  // should apply after the mirror is paused and resumed
+  APPLY_MODE_AFTER_RESUME = 2;
+  // should apply after pod is restarted
+  APPLY_MODE_RESTART = 3;
+  // only applies to newly created mirrors
+  APPLY_MODE_NEW_MIRROR = 4;
+}
+
+enum DynconfTarget {
+  ALL = 0;
+  BIGQUERY = 1;
+  SNOWFLAKE = 2;
+  CLICKHOUSE = 3;
+  QUEUES = 4;
+}
+
+message DropFlowActivityInput {
+  string flow_job_name = 1;
+  string peer_name = 2;
+}
+
+message StartMaintenanceFlowInput {
+}
+
+message StartMaintenanceFlowOutput {
+  string version = 1;
+}
+
+message StartMaintenanceSignal {
+  repeated string skipped_snapshot_wait_flows = 1;
+}
+
+message EndMaintenanceFlowInput {
+}
+
+message EndMaintenanceFlowOutput {
+  string version = 1;
+}
+
+message MaintenanceMirror {
+  int64 mirror_id = 1;
+  string mirror_name = 2;
+  string workflow_id = 3;
+  bool is_cdc = 4;
+  google.protobuf.Timestamp mirror_created_at = 5;
+  google.protobuf.Timestamp mirror_updated_at = 6;
+}
+
+message MaintenanceMirrors {
+  repeated MaintenanceMirror mirrors = 1;
+}
+
+message PeerContextMetadata {
+  string name = 1;
+  peerdb_peers.DBType type = 2;
+}
+
+message FlowContextMetadataInput {
+  string flow_name = 1;
+  string source_name = 2;
+  string destination_name = 3;
+  FlowStatus status = 4;
+  bool is_resync = 5;
+}
+
+enum FlowOperation {
+  FLOW_OPERATION_UNKNOWN = 0;
+  FLOW_OPERATION_SYNC = 1;
+  FLOW_OPERATION_NORMALIZE = 2;
+}
+
+// FlowContextMetadata has contextual information of a flow and is universal at the flow level, it cannot be different for children context
+// it is referenced via pointer
+message FlowContextMetadata{
+  string flow_name = 1;
+  PeerContextMetadata source = 2;
+  PeerContextMetadata destination = 3;
+  FlowStatus status = 4;
+  bool is_resync = 5;
+}
+
+message AdditionalContextMetadata{
+  FlowOperation operation = 1;
+}

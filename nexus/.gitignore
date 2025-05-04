@@ -1,0 +1,11 @@
+debug/
+target/
+
+# submodules
+/sqlparser-rs
+
+# catalog pkg
+/catalog/pkg
+
+# misc
+.env
