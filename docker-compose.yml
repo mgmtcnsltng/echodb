@@ -223,6 +223,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./config/postgresql.conf:/etc/postgresql.conf
 
   clickhouse-server:
     image: clickhouse/clickhouse-server:latest
