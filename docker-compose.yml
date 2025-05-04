@@ -205,7 +205,7 @@ services:
       "
 
   # Additional analytics databases
-  analytics-postgres:
+  postgres:
     image: postgres:17-alpine
     container_name: analytics-postgres
     restart: unless-stopped
@@ -216,7 +216,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - analytics-pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
 
   clickhouse-server:
     image: clickhouse/clickhouse-server:latest
@@ -231,7 +231,7 @@ services:
 volumes:
   peerdb-catalog-pgdata:
   minio-data:
-  analytics-pgdata:
+  pgdata:
   clickhouse-data:
 
 networks:
