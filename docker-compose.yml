@@ -142,6 +142,8 @@ services:
     depends_on:
       temporal-admin-tools:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   flow-worker:
     container_name: flow-worker
