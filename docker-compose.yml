@@ -234,7 +234,7 @@ services:
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - clickhouse-logs:/var/log/clickhouse
-      - .config/config.xml:/etc/clickhouse-server/config.xml
+      - ./config/config.xml:/etc/clickhouse-server/config.xml
 
 volumes:
   peerdb-catalog-pgdata:
