@@ -215,6 +215,8 @@ services:
       POSTGRES_DB: postgres
     ports:
       - "5432:5432"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -231,6 +233,8 @@ services:
       CLICKHOUSE_USER: clickhouse
       CLICKHOUSE_PASSWORD: clickhouse
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - clickhouse-logs:/var/log/clickhouse
