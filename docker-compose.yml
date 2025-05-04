@@ -165,6 +165,8 @@ services:
       RUST_BACKTRACE: 1
     ports:
       - 9900:9900
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       catalog:
         condition: service_healthy
