@@ -182,6 +182,8 @@ services:
       PEERDB_ALLOWED_TARGETS:
       PEERDB_CLICKHOUSE_ALLOWED_DOMAINS:
       PEERDB_EXPERIMENTAL_ENABLE_SCRIPTING: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"    
     depends_on:
       - flow-api
 
