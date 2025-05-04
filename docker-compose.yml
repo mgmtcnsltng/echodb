@@ -45,7 +45,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - peerdb-catalog-pgdata:/var/lib/postgresql/data
       - ./volumes/postgresql.conf:/etc/postgresql.conf
       - ./volumes/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
     healthcheck:
@@ -204,9 +204,37 @@ services:
       wait
       "
 
+  # Additional analytics databases
+  analytics-postgres:
+    image: postgres:17-alpine
+    container_name: analytics-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: analytics_password
+      POSTGRES_DB: analytics_db
+    ports:
+      - "9910:5432"
+    volumes:
+      - analytics-pgdata:/var/lib/postgresql/data
+
+  clickhouse-server:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse-server
+    restart: unless-stopped
+    ports:
+      - "9000:9000"   # native TCP protocol
+      - "8123:8123"   # HTTP interface
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+
+
+
 volumes:
-  pgdata:
+  peerdb-catalog-pgdata:
   minio-data:
+  analytics-pgdata:
+  clickhouse-data:
 
 networks:
   default:
