@@ -42,6 +42,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
       POSTGRES_INITDB_ARGS: --locale=C.UTF-8
+      POSTGRES_HOST_AUTH_METHOD: trust
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
