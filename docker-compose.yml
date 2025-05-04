@@ -233,7 +233,7 @@ services:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
-      - clickhouse_logs:/var/log/clickhouse
+      - clickhouse-logs:/var/log/clickhouse
       - .config/config.xml:/etc/clickhouse-server/config.xml
 
 volumes:
@@ -241,6 +241,7 @@ volumes:
   minio-data:
   pgdata:
   clickhouse-data:
+  clickhouse-logs:
 
 networks:
   default:
