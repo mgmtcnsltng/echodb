@@ -75,8 +75,6 @@ services:
       - ./volumes/temporal-dynamicconfig:/etc/temporal/config/dynamicconfig
     labels:
       kompose.volume.type: configMap
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
       
 
   temporal-admin-tools:
@@ -88,8 +86,6 @@ services:
       - TEMPORAL_ADDRESS=temporal:7233
       - TEMPORAL_CLI_ADDRESS=temporal:7233
       - TEMPORAL_CLI_SHOW_STACKS=1
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     image: temporalio/admin-tools:1.25.2-tctl-1.18.1-cli-1.1.1@sha256:da0c7a7982b571857173ab8f058e7f139b3054800abb4dcb100445d29a563ee8
     stdin_open: true
     tty: true
@@ -111,8 +107,6 @@ services:
       - TEMPORAL_ADDRESS=temporal:7233
       - TEMPORAL_CORS_ORIGINS=http://localhost:3000
       - TEMPORAL_CSRF_COOKIE_INSECURE=true
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     image: temporalio/ui:2.37.2@sha256:3d7b36849d7ca5245f59f6ab558bebbd6b83aa1518f4505e97927419360d1f25
     ports:
       - 8085:8080
@@ -142,8 +136,6 @@ services:
     depends_on:
       temporal-admin-tools:
         condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   flow-worker:
     container_name: flow-worker
@@ -170,8 +162,6 @@ services:
       RUST_BACKTRACE: 1
     ports:
       - 9900:9900
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       catalog:
         condition: service_healthy
@@ -190,9 +180,7 @@ services:
       NEXTAUTH_URL: http://localhost:3000
       PEERDB_ALLOWED_TARGETS:
       PEERDB_CLICKHOUSE_ALLOWED_DOMAINS:
-      PEERDB_EXPERIMENTAL_ENABLE_SCRIPTING: true
-    extra_hosts:
-      - "host.docker.internal:host-gateway"    
+      PEERDB_EXPERIMENTAL_ENABLE_SCRIPTING: true 
     depends_on:
       - flow-api
 
@@ -227,15 +215,11 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
-      POSTGRES_INITDB_ARGS: --locale=C.UTF-8
     ports:
       - "5432:5432"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./config/postgresql.conf:/etc/postgresql.conf
-      - ./config/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
 
   clickhouse-server:
     image: clickhouse/clickhouse-server:latest
