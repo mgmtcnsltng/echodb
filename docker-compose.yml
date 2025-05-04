@@ -108,6 +108,8 @@ services:
       - TEMPORAL_ADDRESS=temporal:7233
       - TEMPORAL_CORS_ORIGINS=http://localhost:3000
       - TEMPORAL_CSRF_COOKIE_INSECURE=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     image: temporalio/ui:2.37.2@sha256:3d7b36849d7ca5245f59f6ab558bebbd6b83aa1518f4505e97927419360d1f25
     ports:
       - 8085:8080
