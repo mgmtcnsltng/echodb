@@ -225,8 +225,16 @@ services:
     ports:
       - "9000:9000"   # native TCP protocol
       - "8123:8123"   # HTTP interface
+      - "9004:9004"   # ClickHouse will pretend to be MySQL for applications connecting to this port
+      - "9005:9005"   # ClickHouse will pretend to be PostgreSQL for applications connecting to this port
+    environment:
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse
+      - .config/config.xml:/etc/clickhouse-server/config.xml
 
 volumes:
   peerdb-catalog-pgdata:
