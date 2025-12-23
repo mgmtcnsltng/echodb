@@ -1,101 +1,330 @@
+# EchoDB - PostgreSQL to ClickHouse CDC with PeerDB
 
-<div align="center">
+Complete Docker setup for real-time data replication from PostgreSQL to ClickHouse using PeerDB.
 
-<img src="images/banner.jpg" alt="PeerDB Banner" width="512" />
+## Features
 
-#### Frustratingly simple ETL for Postgres
+- **Real-time CDC**: Change Data Capture from PostgreSQL to ClickHouse
+- **Auto-Mirror**: Automatically create mirrors for new PostgreSQL tables
+- **Environment Configurable**: All important configs via environment variables
+- **Production Ready**: Includes Temporal workflow orchestration, MinIO staging, and monitoring
 
-[![Workflow Status](https://github.com/PeerDB-io/peerdb/actions/workflows/ci.yml/badge.svg)](https://github.com/Peerdb-io/peerdb/actions/workflows/ci.yml)
-[![ElV2 License](https://badgen.net/badge/License/Elv2/green?icon=github)](https://github.com/PeerDB-io/peerdb/blob/main/LICENSE.md)
-[![Slack Community](https://img.shields.io/badge/slack-peerdb-brightgreen.svg?logo=slack)](https://slack.peerdb.io)
+## Quick Start
 
-</div>
-
-## PeerDB
-
-At PeerDB, we are building a fast, simple and the most cost effective way to stream data from Postgres to Data Warehouses, Queues and Storage engines. If you are running Postgres at the heart of your data-stack and move data at scale from Postgres to any of the above targets, PeerDB can provide value.
-
-We support different modes of streaming - log based (CDC), cursor based (timestamp or integer) and XMIN based. Performance wise, we are 10x faster than existing tools. Features wise, we support native Postgres features such as comprehensive set of data-types incl. jsonb/arrays/geospatial, efficiently streaming toast columns, schema changes and so on.
-
-## Get started
+### 1. Configure Environment
 
 ```bash
-git clone git@github.com:PeerDB-io/peerdb.git
-cd peerdb
-
-# Run docker containers: postgres as catalog, temporal, PeerDB server, PeerDB flow API + workers, PeerDB UI
-# Requires docker and docker-compose installed: https://docs.docker.com/engine/install/
-bash ./run-peerdb.sh
-# OR for local development, images will be built locally.
-# Requires docker, docker-compose as well as the buf compiler for protobuf generation
-# https://buf.build/docs/installation
-bash ./generate-protos.sh
-bash ./dev-peerdb.sh
-
-# connect to peerdb and query away (Use psql version >=14.0)
-psql "port=9900 host=localhost password=peerdb"
+cd echodb
+cp .env.example .env
+# Edit .env with your configuration
 ```
 
-<img src="images/peerdb-demo.gif" width="512" />
+### 2. Start Services
 
-### **IMPORTANT: Ensuring ClickHouse Access to MinIO**
+```bash
+docker-compose up -d
+```
 
-If your ClickHouse DB runs outside Docker (e.g., on VMs or ClickHouse Cloud), it may not have access to MinIO, which is used by PeerDB internally to stage files before loading them. Ensure ClickHouse has network access to MinIO.
+### 3. Setup PeerDB Peers
 
-PeerDB stages PostgreSQL data in MinIO within the Docker stack. Since ClickHouse is outside Docker, it needs a resolvable hostname for MinIO.
+```bash
+./scripts/setup-peerdb.sh
+```
 
-Update `docker-compose.yml` and set `AWS_ENDPOINT_URL_S3` to MinIO's accessible IP (from both PeerDB and ClickHouse):
+### 4. Create Mirrors
+
+**Option A: Manual mirror creation**
+```bash
+./scripts/create-mirror.sh api_keys
+```
+
+**Option B: Auto-mirror (recommended)**
+```bash
+# Install auto-mirror trigger
+./scripts/install-auto-mirror.sh
+
+# Start the worker
+POSTGRES_HOST=localhost ./scripts/auto-mirror-worker.py
+```
+
+Now when you create a new table in PostgreSQL, it will automatically be mirrored to ClickHouse!
+
+## Architecture
+
+```
+┌─────────────┐         ┌─────────────┐         ┌─────────────┐
+│  PostgreSQL │────────>│   PeerDB    │────────>│  ClickHouse │
+│  (App DB)   │  CDC    │  (ETL/ELT)  │  Sync   │  (Analytics)│
+└─────────────┘         └─────────────┘         └─────────────┘
+                              │
+                              ▼
+                       ┌─────────────┐
+                       │   MinIO     │
+                       │  (Staging)  │
+                       └─────────────┘
+```
+
+## Services
+
+| Service | Port | Description |
+|---------|------|-------------|
+| PostgreSQL | 5432 | Application database |
+| Redis | 6379 | Cache and queue |
+| ClickHouse | 8123, 9000 | Analytics database |
+| PeerDB Server | 9900 | ETL/ELT SQL interface |
+| PeerDB UI | 3000 | Web dashboard |
+| Temporal | 7233 | Workflow orchestration |
+| Temporal UI | 8085 | Temporal dashboard |
+| MinIO | 9001, 9002 | S3-compatible storage |
+
+## Environment Variables
+
+See `.env.example` for all available environment variables. Key variables:
+
+### Database Configuration
+- `POSTGRES_DB`: PostgreSQL database name (default: `postgres`)
+- `CLICKHOUSE_DATABASE`: ClickHouse database name (default: `default`)
+- `CLICKHOUSE_USER`: ClickHouse user (default: `default`)
+
+### PeerDB Configuration
+- `PEERDB_PASSWORD`: PeerDB server password (default: `peerdb`)
+- `SOURCE_PEER_NAME`: Source peer name (default: `postgres_main`)
+- `TARGET_PEER_NAME`: Target peer name (default: `clickhouse_analytics`)
+
+### Auto-Mirror Configuration
+- `SYNC_SCHEMA`: Schema to watch (default: `public`)
+- `EXCLUDED_TABLES`: Tables to exclude from auto-mirror
+
+## Scripts
+
+| Script | Description |
+|--------|-------------|
+| `setup-peerdb.sh` | Create PeerDB peers |
+| `create-mirror.sh` | Create a mirror for a specific table |
+| `install-auto-mirror.sh` | Install PostgreSQL event trigger |
+| `auto-mirror-worker.py` | Auto-mirror worker daemon |
+
+## Initialization Scripts
+
+| Script | Description |
+|--------|-------------|
+| `init-postgres.sql` | PostgreSQL schema setup |
+| `init-clickhouse.sql` | ClickHouse analytics tables |
+| `init-peerdb-clickhouse.sql` | ClickHouse permissions for PeerDB |
+
+## Usage Examples
+
+### Create a Mirror for a Single Table
+
+```bash
+./scripts/create-mirror.sh users
+```
+
+### Create Mirrors for Multiple Tables
+
+```bash
+# Connect to PeerDB
+PGPASSWORD=peerdb psql -h localhost -p 9900 -U postgres
+
+# Create mirror with multiple tables
+CREATE MIRROR app_tables_mirror FROM postgres_main TO clickhouse_analytics
+WITH TABLE MAPPING
+(
+  public.users:users,
+  public.orders:orders,
+  public.products:products
+)
+WITH (do_initial_copy = true);
+```
+
+### Test Auto-Mirror
+
+```bash
+# Terminal 1: Start the worker
+POSTGRES_HOST=localhost ./scripts/auto-mirror-worker.py
+
+# Terminal 2: Create a new table
+docker exec echodb-postgres-1 psql -U postgres -c "
+  CREATE TABLE test_table (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), name TEXT);
+"
+
+# Terminal 1: You should see:
+# 📢 New table detected: public.test_table
+# ✅ Mirror created: test_table_mirror
+```
+
+## PeerDB SQL Reference
+
+See `skill.md` for complete PeerDB SQL documentation.
+
+### Common Commands
+
+**Show peers:**
+```sql
+-- Note: Currently has a bug, use catalog instead
+SELECT id, name, type FROM peers;
+```
+
+**Show flows/mirrors:**
+```sql
+-- Note: Currently has a bug, use catalog instead
+SELECT id, name, flow_status FROM flows;
+```
+
+**Drop mirror:**
+```sql
+DROP MIRROR mirror_name;
+```
+
+**Pause/Resume mirror:**
+```sql
+PAUSE MIRROR mirror_name;
+RESUME MIRROR mirror_name;
+```
+
+## Troubleshooting
+
+### PeerDB "SHOW PEERS" Returns Error
+
+This is a known bug. Query the catalog database directly:
+```bash
+docker exec echodb-catalog-1 psql -U postgres -c "SELECT id, name, type FROM peers;"
+```
+
+### Mirror Creation Fails
+
+Check PeerDB logs:
+```bash
+docker logs echodb-peerdb-1
+```
+
+Check ClickHouse connection:
+```bash
+docker exec echodb-clickhouse-1 clickhouse-client --query "SELECT 1"
+```
+
+### Auto-Mirror Worker Not Detecting Tables
+
+1. Verify trigger is installed:
+```sql
+SELECT * FROM pg_event_trigger WHERE evtname = 'peerdb_auto_mirror_trigger';
+```
+
+2. Check worker can connect to PostgreSQL
+
+3. Verify correct schema name in environment variables
+
+### Tables Not Syncing to ClickHouse
+
+1. Check mirror status in catalog database
+2. Check flow-worker logs for errors
+3. Verify ClickHouse user permissions
+
+## Production Deployment
+
+### Using Docker Auto-Mirror Service
+
+Add to `docker-compose.yml`:
+
 ```yaml
-AWS_ENDPOINT_URL_S3: http://172.31.26.57:9001 # Change this to IP/host which is accessible by both PeerDB and ClickHouse
+  peerdb-auto-mirror:
+    build:
+      context: .
+      dockerfile: Dockerfile.auto-mirror
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      PEERDB_HOST: peerdb
+      PEERDB_PORT: 9900
+      PEERDB_PASSWORD: peerdb
+    depends_on:
+      - postgres
+      - peerdb
+    restart: unless-stopped
 ```
 
-Rerun Docker Compose to apply changes. On AWS/GCP/Azure, also ensure the security group allows inbound access to MinIO.
+Create `Dockerfile.auto-mirror`:
 
-Follow this 5-minute [Quickstart Guide](https://docs.peerdb.io/quickstart#quickstart) to see PeerDB in action i.e. streaming data in real-time across stores.
+```dockerfile
+FROM python:3.13-slim
 
-## Why PeerDB
+RUN pip install psycopg2-binary
 
-Current data tools prioritize a wide range of connectors, often neglecting to optimize for Postgres users. This can be problematic for those storing large amounts of data in Postgres and frequently transferring it. As a result, many resort to building custom pipelines when existing tools don't meet their needs. We've developed this project to provide a straightforward and reliable solution specifically for Postgres.
+COPY scripts/auto-mirror-worker.py /app/
+WORKDIR /app
 
-### Postgres-first Approach
+CMD ["python", "auto-mirror-worker.py"]
+```
 
-PeerDB is an ETL/ELT tool built for PostgreSQL. We implement multiple Postgres native and infrastructural optimizations to provide a fast, reliable and a feature-rich experience for moving data in/out of PostgreSQL.
+## Monitoring
 
-**For performance** -  we can parallelize initial load for a large table, still ensuring consistency. Syncing 100s of GB reduces from days to minutes. Our architecture is designed for real-time syncs and implements multiple logical replication related optimizations (tuning Postgres configs, parallel reading of slot etc.). This enables 10x faster Change Data Capture with data-freshness of a few 10s of seconds even at large throughputs (10k+ tps).
+### Check Service Status
 
-**For reliability**, we have mechanisms in place for fault tolerance - state management, automatic retries, handling idempotency and consistency and so on (<https://blog.peerdb.io/using-temporal-to-scale-data-synchronization-at-peerdb>) Configurable batching and parallelism prevent out of memory (OOMs) and crashes.
+```bash
+docker-compose ps
+```
 
-**From a feature richness standpoint**, we support efficient syncing of tables with large (TOAST) columns. We support multiple streaming modes - Log based (CDC) based, Query based streaming etc. We provide rich data-type mapping and plan to support every possible (incl. Custom types) that Postgres supports to the best extent possible on the target data-store.
+### View Logs
 
-### Now available natively in ClickHouse Cloud (Private Preview)
+```bash
+# All services
+docker-compose logs -f
 
-PeerDB is now available natively in ClickHouse Cloud (Public Preview). Learn more about it [here](https://clickhouse.com/cloud/clickpipes/postgres-cdc-connector).
+# Specific service
+docker-compose logs -f peerdb
+docker-compose logs -f flow-worker
+```
 
-<a href="https://clickhouse.com/cloud/clickpipes/postgres-cdc-connector">
-<img src="images/in-clickpipes.png" width="512" />
-</a>
+### Check Mirror Status via Catalog
 
-#### **Postgres-compatible SQL interface to do ETL**
+```bash
+docker exec echodb-catalog-1 psql -U postgres -c "
+  SELECT
+    f.id,
+    f.name,
+    f.flow_status,
+    f.created_at
+  FROM flows f
+  ORDER BY f.created_at DESC;
+"
+```
 
-The Postgres-compatible SQL interface for ETL is unique to PeerDB and enables you to operate in a language you are familiar with. You can do ETL the same way you work with your databases.
+## Backup and Restore
 
-You can use Postgres’ eco-system to manage your ETL —
+### Backup PostgreSQL
 
-1. Client tools like pgAdmin, psql to run SQL commands.
-2. BI tools like Grafana, Tableau to visually monitor syncs and transforms.
-3. Database migration and versioning tools like Flyway to manage your ETL.
-4. Any language (Python, Go, Node.js etc) and Scheduler (AirFlow) for development.
-5. And many more
+```bash
+docker exec echodb-postgres-1 pg_dump -U postgres postgres > backup.sql
+```
 
-## Status
+### Backup ClickHouse
 
-We support multiple target connectors to move data from Postgres and a couple of source connectors to move data into Postgres. Check the status of connectors [here](https://docs.peerdb.io/sql/commands/supported-connectors)
+```bash
+docker exec echodb-clickhouse-1 clickhouse-backup create
+```
 
-## Support
+## Security Notes
 
-Our docs can be found [here](https://docs.peerdb.io/introduction). If you have any questions, feel free to drop by our [Slack](https://slack.peerdb.io/)!
-
+- Change all default passwords before production deployment
+- Use `openssl rand -base64 32` to generate `PEERDB_NEXTAUTH_SECRET`
+- Restrict network access to sensitive ports in production
+- Use TLS certificates for external connections
+- Rotate credentials regularly
 
 ## License
 
-PeerDB is licensed under Elastic License 2.0 (ELv2). Please see the LICENSE file for additional information. If you have any licensing questions please email **<contact@peerdb.io>**
+This is a configuration template. Refer to individual component licenses:
+- PeerDB: Elastic License 2.0 (ELv2)
+- PostgreSQL: PostgreSQL License
+- ClickHouse: Apache License 2.0
+- Temporal: MIT License
+
+## Resources
+
+- [PeerDB Documentation](https://docs.peerdb.io)
+- [PeerDB GitHub](https://github.com/PeerDB-io/peerdb)
+- [ClickHouse Docs](https://clickhouse.com/docs)
+- [Temporal Docs](https://temporal.io/)

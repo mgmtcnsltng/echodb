@@ -1,8 +1,38 @@
-limit.maxIDLength:
-  - value: 255
+# Temporal dynamic configuration file
+# This is a minimal config for development with SQL persistence.
+
+# The number of history shards is the primary factor for scalability
+# For development, a single shard is sufficient
+history.numHistoryShards:
+  - value: 1
     constraints: {}
-system.forceSearchAttributesCacheRefreshOnRead:
-  - value: true # Dev setup only. Please don't turn this on in production.
+
+# Worker options
+worker.activitiesPerSecond:
+  - value: 100000
     constraints: {}
-frontend.enableUpdateWorkflowExecution:
-  - value: true # to enable external updates of workflow status [PAUSING, TERMINATING]
+
+worker.workflowTaskExecutionRate:
+  - value: 100000
+    constraints: {}
+
+worker.maxConcurrentWorkflowTaskExecutionSize:
+  - value: 1000
+    constraints: {}
+
+worker.maxConcurrentActivityExecutionSize:
+  - value: 1000
+    constraints: {}
+
+worker.maxWorkflowTaskExecutionRate:
+  - value: 100000
+    constraints: {}
+
+# RPS (requests per second) for the frontend service
+rps:
+  - value: 2400
+    constraints: {}
+
+rps.identity:
+  - value: 1200
+    constraints: {}

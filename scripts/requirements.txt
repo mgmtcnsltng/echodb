@@ -1,0 +1,8 @@
+# EchoDB Auto-Mirror Worker - Python Dependencies
+# Production-ready auto-mirroring from PostgreSQL to ClickHouse via PeerDB
+
+# PostgreSQL adapter with binary C extensions for performance
+psycopg2-binary>=2.9.9
+
+# Note: http.server and logging are part of Python standard library
+# No additional dependencies needed for health checks or logging
