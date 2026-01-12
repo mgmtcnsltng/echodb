@@ -114,7 +114,8 @@ done
 echo "  → ClickHouse..."
 attempt=0
 while [ $attempt -lt $max_attempts ]; do
-    if clickhouse-client --host "$CLICKHOUSE_HOST" --port "$CLICKHOUSE_PORT" --query "SELECT 1" > /dev/null 2>&1; then
+    # Try HTTP API instead of clickhouse-client
+    if curl -s "http://${CLICKHOUSE_HOST}:8123" --data "SELECT 1" > /dev/null 2>&1; then
         echo "    ✅ ClickHouse is ready"
         break
     fi
@@ -129,31 +130,10 @@ done
 echo ""
 
 # ============================================================
-# Step 2: Install PostgreSQL triggers
+# Step 2: Create PeerDB peers
 # ============================================================
 
-echo "Step 1/2: Installing PostgreSQL event triggers..."
-echo "Watching schemas: ${SYNC_SCHEMA}"
-
-# Run the setup script with variable substitution
-export SYNC_SCHEMA
-PGPASSWORD="$POSTGRES_PASSWORD" envsubst < /app/scripts/setup-auto-mirror.sql | \
-    psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-
-if [ $? -eq 0 ]; then
-    echo "✅ PostgreSQL triggers installed successfully"
-else
-    echo "❌ Failed to install PostgreSQL triggers"
-    exit 1
-fi
-
-echo ""
-
-# ============================================================
-# Step 3: Create PeerDB peers
-# ============================================================
-
-echo "Step 2/2: Creating PeerDB peers..."
+echo "Step 1/1: Creating PeerDB peers..."
 
 # Function to execute SQL via PeerDB
 exec_peerdb_sql() {
@@ -193,6 +173,7 @@ if [ "$PEER_EXISTS" = "t" ]; then
         user = '$CLICKHOUSE_USER',
         password = '$CLICKHOUSE_PASSWORD',
         database = '$CLICKHOUSE_DATABASE',
+        staging_database = '_peerdb',
         disable_tls = true
     );" 2>/dev/null && echo "    ✅ Created" || echo "    ℹ️  Already exists"
 else
@@ -202,7 +183,174 @@ fi
 echo ""
 
 # ============================================================
-# Step 4: Create marker file
+# Step 3: Install PostgreSQL event triggers
+# ============================================================
+
+echo "Installing PostgreSQL event triggers..."
+
+PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" << 'EOSQL' 2>/dev/null
+-- Helper function to check if schema is in watch list
+CREATE OR REPLACE FUNCTION is_schema_in_watch_list(schema_name text, watch_list text)
+RETURNS BOOLEAN AS $$
+DECLARE
+  item text;
+BEGIN
+  FOREACH item IN ARRAY regexp_split_to_array(watch_list, '\s*,\s*')
+  LOOP
+    IF item = schema_name THEN
+      RETURN TRUE;
+    END IF;
+  END LOOP;
+  RETURN FALSE;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to notify when a new table is created
+CREATE OR REPLACE FUNCTION notify_new_table()
+RETURNS event_trigger AS $$
+DECLARE
+  obj record;
+  schema_name text;
+  table_name text;
+  watch_list text := 'public';
+BEGIN
+  FOR obj IN SELECT * FROM pg_event_trigger_ddl_commands() WHERE command_tag = 'CREATE TABLE'
+  LOOP
+    schema_name := split_part(obj.object_identity, '.', 1);
+
+    IF NOT is_schema_in_watch_list(schema_name, watch_list) THEN
+      CONTINUE;
+    END IF;
+
+    table_name := substring(obj.object_identity from position('.' in obj.object_identity) + 1);
+
+    PERFORM pg_notify('peerdb_create_mirror',
+      json_build_object(
+        'schema', schema_name,
+        'table', table_name,
+        'timestamp', now()
+      )::text
+    );
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to notify when a table is dropped
+CREATE OR REPLACE FUNCTION notify_drop_table()
+RETURNS event_trigger AS $$
+DECLARE
+  obj record;
+  schema_name text;
+  table_name text;
+  watch_list text := 'public';
+BEGIN
+  FOR obj IN SELECT * FROM pg_event_trigger_ddl_commands() WHERE command_tag = 'DROP TABLE'
+  LOOP
+    schema_name := split_part(obj.object_identity, '.', 1);
+
+    IF NOT is_schema_in_watch_list(schema_name, watch_list) THEN
+      CONTINUE;
+    END IF;
+
+    table_name := substring(obj.object_identity from position('.' in obj.object_identity) + 1);
+
+    PERFORM pg_notify('peerdb_drop_mirror',
+      json_build_object(
+        'schema', schema_name,
+        'table', table_name,
+        'timestamp', now()
+      )::text
+    );
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create event trigger for CREATE TABLE commands
+DROP EVENT TRIGGER IF EXISTS peerdb_auto_mirror_trigger;
+CREATE EVENT TRIGGER peerdb_auto_mirror_trigger
+ON ddl_command_end
+WHEN tag IN ('CREATE TABLE')
+EXECUTE FUNCTION notify_new_table();
+
+-- Create event trigger for DROP TABLE commands
+DROP EVENT TRIGGER IF EXISTS peerdb_auto_mirror_drop_trigger;
+CREATE EVENT TRIGGER peerdb_auto_mirror_drop_trigger
+ON ddl_command_end
+WHEN tag IN ('DROP TABLE')
+EXECUTE FUNCTION notify_drop_table();
+EOSQL
+
+if [ $? -eq 0 ]; then
+    echo "    ✅ Event triggers installed"
+else
+    echo "    ⚠️  Event trigger installation had issues, but continuing..."
+fi
+
+echo ""
+
+# ============================================================
+# Step 4: Clean up unwanted default databases
+# ============================================================
+
+echo "Cleaning up unwanted default databases..."
+
+# Drop the 'postgres' database in PostgreSQL (created by default)
+echo "  → Dropping 'postgres' database from PostgreSQL..."
+PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "DROP DATABASE IF EXISTS postgres;" 2>/dev/null
+if [ $? -eq 0 ]; then
+    echo "    ✅ Dropped 'postgres' database"
+else
+    echo "    ℹ️  'postgres' database already removed or doesn't exist"
+fi
+
+# Drop the 'default' database in ClickHouse (created by default)
+echo "  → Dropping 'default' database from ClickHouse..."
+curl -s "http://${CLICKHOUSE_HOST}:8123" --data "DROP DATABASE IF EXISTS default" > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "    ✅ Dropped 'default' database"
+else
+    echo "    ℹ️  'default' database already removed or doesn't exist"
+fi
+
+echo ""
+
+# ============================================================
+# Step 5: Create mirrors for init tables
+# ============================================================
+
+echo "Creating mirrors for initialization tables..."
+
+# Function to create a mirror
+create_mirror_if_not_exists() {
+    local mirror_name="$1"
+    local table_name="$2"
+
+    # Check if mirror already exists
+    MIRROR_EXISTS=$(PGPASSWORD="$PEERDB_PASSWORD" psql -h "$PEERDB_HOST" -p "$PEERDB_PORT" -U "$PEERDB_USER" -tAc "SELECT COUNT(*) FROM flows WHERE name = '$mirror_name'" 2>/dev/null || echo "0")
+
+    if [ "$MIRROR_EXISTS" = "0" ]; then
+        echo "  → Creating mirror for $table_name..."
+        PGPASSWORD="$PEERDB_PASSWORD" psql -h "$PEERDB_HOST" -p "$PEERDB_PORT" -U "$PEERDB_USER" -c "CREATE MIRROR $mirror_name FROM $SOURCE_PEER_NAME TO $TARGET_PEER_NAME WITH TABLE MAPPING (public.$table_name:$table_name) WITH (do_initial_copy = true);" > /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            echo "    ✅ Created"
+        else
+            echo "    ⚠️  Failed (table may not exist yet)"
+        fi
+    else
+        echo "  → $table_name mirror already exists, skipping"
+    fi
+}
+
+# Create mirrors for sample tables
+create_mirror_if_not_exists "users_mirror" "users"
+create_mirror_if_not_exists "products_mirror" "products"
+create_mirror_if_not_exists "orders_mirror" "orders"
+create_mirror_if_not_exists "order_items_mirror" "order_items"
+
+echo ""
+
+# ============================================================
+# Step 6: Create marker file
 # ============================================================
 
 echo "Creating setup completion marker..."

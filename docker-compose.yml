@@ -79,9 +79,9 @@ services:
       - "-c"
       - "max_wal_senders=${POSTGRES_MAX_WAL_SENDERS:-4}"
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-echodb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-echodb}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -115,9 +115,9 @@ services:
     image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION:-25.9}
     restart: unless-stopped
     environment:
-      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-default}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-default}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-echodb}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-echodb}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-password}
     ports:
       - "${CLICKHOUSE_PORT:-8123}:8123"
       - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
@@ -315,7 +315,8 @@ services:
     working_dir: /app
     command: >
       bash -c "
-      pip install --no-cache-dir -q psycopg2-binary redis &&
+      apt-get update && apt-get install -y postgresql-client &&
+      pip install --no-cache-dir -q psycopg2-binary redis clickhouse-connect &&
       python scripts/auto-mirror-worker.py
       "
     volumes:
@@ -358,7 +359,8 @@ services:
     working_dir: /app
     command: >
       bash -c "
-      pip install --no-cache-dir -q psycopg2-binary redis &&
+      apt-get update && apt-get install -y postgresql-client &&
+      pip install --no-cache-dir -q psycopg2-binary redis clickhouse-connect &&
       python scripts/auto-mirror-worker.py
       "
     volumes:
@@ -407,7 +409,7 @@ services:
     command: >
       bash -c "
       echo 'Starting EchoDB automated setup...' &&
-      apk add --no-cache clickhouse-client postgresql-client &&
+      apk add --no-cache postgresql-client curl &&
       bash /app/scripts/auto-setup.sh
       "
     depends_on:
