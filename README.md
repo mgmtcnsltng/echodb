@@ -1,14 +1,32 @@
-# EchoDB - PostgreSQL to ClickHouse CDC with PeerDB
+# EchoDB - Automated PostgreSQL to ClickHouse CDC with PeerDB
 
-Complete Docker-based CDC solution for real-time data replication from PostgreSQL to ClickHouse using PeerDB with production-ready features:
+Complete **zero-touch** Docker-based CDC solution for real-time data replication from PostgreSQL to ClickHouse using PeerDB with production-ready features:
+
+### Core Value Propositions
 
 - **True Zero-Touch Deployment** - Works immediately after `docker compose up -d`
+- **Full Automation** - Auto-creates peers, triggers, mirrors, and cleans databases
+- **Complete Auto-Mirror** - Automatically creates mirrors for ALL PostgreSQL tables (including init tables)
+- **Production-Ready** - HA, circuit breakers, retries, health checks, and monitoring built-in
+
+### Technical Features
+
+- **Real-Time CDC** - Logical replication for sub-second data sync
 - **High Availability** - Redis-based leader election with multiple worker instances
 - **Circuit Breakers** - Prevents cascading failures with automatic recovery
-- **Full Auto-Mirror** - Automatically creates mirrors for ALL PostgreSQL tables (including init tables)
 - **Data Consistency** - Automatic verification between PostgreSQL and ClickHouse
+- **DROP TABLE Handling** - Mirrors automatically dropped when tables deleted
 - **Clean Databases** - Automatically removes unwanted `postgres` and `default` databases
-- **Flexible Deployment** - Local, remote VM, or remote database connections
+- **Multi-Schema Support** - Watch multiple PostgreSQL schemas simultaneously
+
+### Deployment Flexibility
+
+- **Local Deployment** - Everything runs in Docker on your machine
+- **Remote VM Deployment** - Deploy on any server with Docker
+- **Remote PostgreSQL** - Connect to remote PostgreSQL server
+- **Remote ClickHouse** - Connect to remote ClickHouse server
+- **Hybrid** - Any combination of local and remote databases
+- **Cloud Ready** - Works with AWS RDS, Google Cloud SQL, Azure Database
 
 ## Quick Start
 
