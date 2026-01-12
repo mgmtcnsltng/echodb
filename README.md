@@ -522,6 +522,46 @@ This is a configuration template. Refer to individual component licenses:
 - ClickHouse: Apache License 2.0
 - Temporal: MIT License
 
+## Credits & Acknowledgments
+
+This project is built upon amazing open-source technologies:
+
+- **[PeerDB](https://peerdb.io)** - ETL/ELT platform for PostgreSQL CDC
+  - License: Elastic License 2.0 (ELv2)
+  - GitHub: https://github.com/PeerDB-io/peerdb
+  
+- **[PostgreSQL](https://www.postgresql.org)** - World's most advanced open source relational database
+  - License: PostgreSQL License
+  - Website: https://www.postgresql.org
+  
+- **[ClickHouse](https://clickhouse.com)** - Fast open-source OLAP database management system
+  - License: Apache License 2.0
+  - GitHub: https://github.com/ClickHouse/ClickHouse
+  
+- **[Temporal](https://temporal.io)** - Platform for durable execution
+  - License: MIT License
+  - GitHub: https://github.com/temporalio/temporal
+
+Additional components:
+- **[Redis](https://redis.io)** - In-memory data structure store
+- **[MinIO](https://min.io)** - High-performance object storage
+- **[Temporal](https://temporal.io)** - Workflow orchestration platform
+
+### AI Development Tools
+
+This project was developed with assistance from advanced AI coding assistants:
+
+- **[Claude Code](https://claude.ai/code)** - Anthropic's AI-powered development environment
+- **[OpenAI Codex](https://openai.com)** - AI code generation and assistance
+- **[GLM-4.7](https://z.ai/blog/glm-4.7)** - Open-source language model by Zhipu AI
+
+### Development Tools
+
+- **[Zed](https://zed.dev)** - High-performance code editor by Zed Industries
+- **[Docker](https://www.docker.com)** - Container platform for building and shipping applications
+
+Special thanks to the open-source community and AI research community for making these powerful tools available.
+
 ## Resources
 
 - [PeerDB Documentation](https://docs.peerdb.io)
