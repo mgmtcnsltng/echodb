@@ -55,7 +55,7 @@ x-auto-mirror-config: &auto-mirror-config
   HEALTH_CHECK_HOST: ${HEALTH_CHECK_HOST:-0.0.0.0}
   REDIS_HOST: ${REDIS_HOST:-redis}
   REDIS_PORT: ${REDIS_PORT:-6379}
-  REDIS_PASSWORD: ${REDIS_PASSWORD:-password}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
   LEADER_ELECTION_TTL: ${LEADER_ELECTION_TTL:-30}
   LEADER_ELECTION_INTERVAL: ${LEADER_ELECTION_INTERVAL:-10}
   PEERDB_FAILURE_THRESHOLD: ${PEERDB_FAILURE_THRESHOLD:-5}
@@ -90,7 +90,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-echodb}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -98,14 +98,7 @@ services:
   redis:
     image: redis:${REDIS_VERSION:-7.4-alpine}
     restart: unless-stopped
-    command:
-      [
-        "redis-server",
-        "--appendonly",
-        "yes",
-        "--requirepass",
-        "${REDIS_PASSWORD:-redis}",
-      ]
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -441,9 +434,9 @@ services:
       CONSISTENCY_CHECKER_HOST: ${CONSISTENCY_CHECKER_HOST:-0.0.0.0}
       CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-clickhouse}
       CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-default}
-      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-default}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-echodb}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-password}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-echodb}
     ports:
       - "${CONSISTENCY_CHECKER_PORT:-8090}:8090"
     extra_hosts:

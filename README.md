@@ -33,7 +33,7 @@ Complete **zero-touch** Docker-based CDC solution for real-time data replication
 ### 1. Clone and Configure
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/mgmtcnsltng/echodb.git
 cd echodb
 cp .env.example .env
 # Edit .env if needed (defaults work for local deployment)

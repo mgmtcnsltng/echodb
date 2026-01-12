@@ -22,10 +22,10 @@ Environment Variables:
     WORKER_ID: Unique worker identifier (default: auto-generated UUID)
 """
 
-import time
-import threading
-import uuid
 import logging
+import threading
+import time
+import uuid
 from typing import Optional
 
 try:
@@ -71,7 +71,7 @@ class LeaderElection:
         worker_id: Optional[str] = None,
         ttl: int = 30,
         redis_password: Optional[str] = None,
-        redis_db: int = 0
+        redis_db: int = 0,
     ):
         """
         Initialize leader election.
@@ -92,15 +92,21 @@ class LeaderElection:
         self.lock_key = "echodb:auto_mirror:leader_lock"
 
         # Initialize Redis client
-        self.redis_client = redis.Redis(
-            host=redis_host,
-            port=redis_port,
-            password=redis_password,
-            db=redis_db,
-            decode_responses=True,
-            socket_connect_timeout=5,
-            socket_timeout=5
-        )
+        # Build Redis connection parameters
+        redis_params = {
+            "host": redis_host,
+            "port": redis_port,
+            "db": redis_db,
+            "decode_responses": True,
+            "socket_connect_timeout": 5,
+            "socket_timeout": 5,
+        }
+
+        # Only add password if it's not empty
+        if redis_password:
+            redis_params["password"] = redis_password
+
+        self.redis_client = redis.Redis(**redis_params)
 
         # Leader state
         self.is_leader = False
@@ -135,7 +141,7 @@ class LeaderElection:
                 self.lock_key,
                 self.worker_id,
                 nx=True,  # Only set if key doesn't exist
-                ex=self.ttl  # Set expiration
+                ex=self.ttl,  # Set expiration
             )
 
             if result:
@@ -174,7 +180,7 @@ class LeaderElection:
             self._heartbeat_thread = threading.Thread(
                 target=self._heartbeat_loop,
                 daemon=True,
-                name=f"heartbeat-{self.worker_id}"
+                name=f"heartbeat-{self.worker_id}",
             )
             self._heartbeat_thread.start()
             logger.debug(f"Heartbeat thread started for {self.worker_id}")
@@ -304,7 +310,7 @@ class LeaderElection:
                 "is_leader": self.is_leader,
                 "last_heartbeat": self.last_heartbeat,
                 "ttl": self.ttl,
-                "lock_key": self.lock_key
+                "lock_key": self.lock_key,
             }
 
 
@@ -314,7 +320,7 @@ if __name__ == "__main__":
 
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
     if len(sys.argv) < 3:
@@ -328,7 +334,7 @@ if __name__ == "__main__":
         redis_host=redis_host,
         redis_port=redis_port,
         worker_id=f"test-worker-{uuid.uuid4().hex[:4]}",
-        ttl=10
+        ttl=10,
     )
 
     try:

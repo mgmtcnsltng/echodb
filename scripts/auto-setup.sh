@@ -343,9 +343,6 @@ create_mirror_if_not_exists() {
 
 # Create mirrors for sample tables
 create_mirror_if_not_exists "users_mirror" "users"
-create_mirror_if_not_exists "products_mirror" "products"
-create_mirror_if_not_exists "orders_mirror" "orders"
-create_mirror_if_not_exists "order_items_mirror" "order_items"
 
 echo ""
 
