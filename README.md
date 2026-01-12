@@ -17,7 +17,7 @@ Complete **zero-touch** Docker-based CDC solution for real-time data replication
 - **Data Consistency** - Automatic verification between PostgreSQL and ClickHouse
 - **DROP TABLE Handling** - Mirrors automatically dropped when tables deleted
 - **Clean Databases** - Automatically removes unwanted `postgres` and `default` databases
-- **Multi-Schema Support** - Watch multiple PostgreSQL schemas simultaneously
+- **Multi-Schema Support** - Watch multiple PostgreSQL schemas simultaneously (comma-separated)
 
 ### Deployment Flexibility
 
