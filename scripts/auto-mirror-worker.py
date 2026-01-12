@@ -30,6 +30,7 @@ import time
 import logging
 import signal
 import threading
+import uuid
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from typing import Optional, Set
@@ -39,6 +40,24 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 # Try to import http.server for health checks (always available in Python 3)
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# Import leader election module
+try:
+    from leader_election import LeaderElection
+except ImportError:
+    LeaderElection = None
+    logger = logging.getLogger("echodb-auto-mirror")
+    logger.warning("Leader election module not available. HA features disabled.")
+
+# Import circuit breaker module
+try:
+    from circuit_breaker import CircuitBreaker, CircuitBreakerConfig, CircuitBreakerOpenError
+except ImportError:
+    CircuitBreaker = None
+    CircuitBreakerConfig = None
+    CircuitBreakerOpenError = None
+    if logger:
+        logger.warning("Circuit breaker module not available. Resilience features disabled.")
 
 # ============================================================
 # Configuration (with environment variable support)
@@ -89,6 +108,29 @@ class Config:
         "EXCLUDED_TABLES",
         "spatial_ref_sys,geometry_columns,geography_columns,raster_columns,raster_overviews"
     )
+
+    @classmethod
+    def get_sync_schemas(cls) -> Set[str]:
+        """Get schemas to sync as a set (supports comma-separated list)."""
+        if cls.SCHEMA_NAME.startswith('['):
+            return set(json.loads(cls.SCHEMA_NAME))
+        return set(s.strip() for s in cls.SCHEMA_NAME.split(',') if s.strip())
+
+    # Leader Election Configuration
+    REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+    REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
+    LEADER_ELECTION_TTL = int(os.getenv("LEADER_ELECTION_TTL", "30"))  # seconds
+    LEADER_ELECTION_INTERVAL = int(os.getenv("LEADER_ELECTION_INTERVAL", "10"))  # seconds
+    WORKER_ID = os.getenv("WORKER_ID", None)
+
+    # Circuit Breaker Configuration
+    PEERDB_FAILURE_THRESHOLD = int(os.getenv("PEERDB_FAILURE_THRESHOLD", "5"))
+    PEERDB_SUCCESS_THRESHOLD = int(os.getenv("PEERDB_SUCCESS_THRESHOLD", "2"))
+    PEERDB_TIMEOUT = int(os.getenv("PEERDB_TIMEOUT", "60"))  # seconds
+    POSTGRES_FAILURE_THRESHOLD = int(os.getenv("POSTGRES_FAILURE_THRESHOLD", "3"))
+    POSTGRES_SUCCESS_THRESHOLD = int(os.getenv("POSTGRES_SUCCESS_THRESHOLD", "2"))
+    POSTGRES_TIMEOUT = int(os.getenv("POSTGRES_TIMEOUT", "30"))  # seconds
 
     @classmethod
     def get_excluded_tables(cls) -> Set[str]:
@@ -167,6 +209,10 @@ class WorkerState:
         self._mirrors_failed = 0
         self._last_error: Optional[str] = None
 
+        # Leader election state
+        self._leader_election: Optional[LeaderElection] = None
+        self._worker_id: Optional[str] = None
+
     @property
     def running(self) -> bool:
         with self._lock:
@@ -212,7 +258,7 @@ class WorkerState:
     def get_stats(self) -> dict:
         """Get current statistics."""
         with self._lock:
-            return {
+            stats = {
                 "running": self._running,
                 "connected": self._connected,
                 "last_notification": self._last_notification.isoformat() if self._last_notification else None,
@@ -221,8 +267,54 @@ class WorkerState:
                 "last_error": self._last_error
             }
 
+            # Add leader election info if available
+            if self._leader_election:
+                stats["is_leader"] = self._leader_election.is_leader
+                stats["worker_id"] = self._worker_id
+            else:
+                stats["is_leader"] = True  # Single instance mode
+                stats["worker_id"] = "single-instance"
+
+            return stats
+
+    @property
+    def is_leader(self) -> bool:
+        """Check if this worker is the leader."""
+        with self._lock:
+            if self._leader_election:
+                return self._leader_election.is_leader
+            return True  # Single instance mode is always "leader"
+
+    @property
+    def worker_id(self) -> str:
+        """Get this worker's ID."""
+        with self._lock:
+            return self._worker_id or "single-instance"
+
 
 state = WorkerState()
+
+# Initialize circuit breakers if available
+peerdb_api_breaker = None
+postgres_connection_breaker = None
+
+if CircuitBreaker and CircuitBreakerConfig:
+    peerdb_api_breaker = CircuitBreaker(CircuitBreakerConfig(
+        name="peerdb_api",
+        failure_threshold=Config.PEERDB_FAILURE_THRESHOLD,
+        success_threshold=Config.PEERDB_SUCCESS_THRESHOLD,
+        timeout=Config.PEERDB_TIMEOUT
+    ))
+
+    postgres_connection_breaker = CircuitBreaker(CircuitBreakerConfig(
+        name="postgres_connection",
+        failure_threshold=Config.POSTGRES_FAILURE_THRESHOLD,
+        success_threshold=Config.POSTGRES_SUCCESS_THRESHOLD,
+        timeout=Config.POSTGRES_TIMEOUT
+    ))
+
+    if logger:
+        logger.info("Circuit breakers initialized for PeerDB API and PostgreSQL connection")
 
 
 # ============================================================
@@ -270,11 +362,21 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         }).encode())
 
     def send_metrics_response(self):
-        """Metrics endpoint with detailed stats."""
+        """Metrics endpoint with detailed stats including circuit breaker state."""
         self.send_response(200 if state.running else 503)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps(state.get_stats()).encode())
+
+        stats = state.get_stats()
+
+        # Add circuit breaker status if available
+        if peerdb_api_breaker and postgres_connection_breaker:
+            stats["circuit_breakers"] = {
+                "peerdb_api": peerdb_api_breaker.get_status(),
+                "postgres_connection": postgres_connection_breaker.get_status()
+            }
+
+        self.wfile.write(json.dumps(stats).encode())
 
 
 def start_health_check_server():
@@ -291,11 +393,11 @@ def start_health_check_server():
 
 
 # ============================================================
-# Mirror Creation with Retry Logic
+# Mirror Creation with Retry Logic and Circuit Breaker
 # ============================================================
 
-def create_peerdb_mirror_with_retry(schema: str, table: str) -> bool:
-    """Create a PeerDB mirror with exponential backoff retry logic."""
+def _create_mirror_internal(schema: str, table: str) -> bool:
+    """Internal mirror creation without circuit breaker (called by circuit breaker)."""
     mirror_name = f"{table}_mirror"
 
     # Build the CREATE MIRROR SQL
@@ -332,31 +434,18 @@ WITH (do_initial_copy = true);"""
                 else:
                     error_msg = result.stderr.strip()
                     logger.warning(f"Attempt {retry_count + 1} failed: {error_msg}")
-
-                    # Last attempt failed
-                    if retry_count == Config.MAX_RETRIES:
-                        logger.error(f"❌ Failed to create mirror after {Config.MAX_RETRIES + 1} attempts: {error_msg}")
-                        state.increment_mirrors_failed()
-                        state.set_error(f"Mirror creation failed: {error_msg}")
-                        return False
+                    # Raise exception for circuit breaker to track
+                    raise Exception(f"Mirror creation failed: {error_msg}")
 
         except subprocess.TimeoutExpired:
             logger.warning(f"Attempt {retry_count + 1} timed out")
-            if retry_count == Config.MAX_RETRIES:
-                error_msg = f"Timeout creating mirror for {table}"
-                logger.error(f"❌ {error_msg}")
-                state.increment_mirrors_failed()
-                state.set_error(error_msg)
-                return False
+            raise Exception(f"Timeout creating mirror for {table}")
 
         except Exception as e:
-            logger.warning(f"Attempt {retry_count + 1} raised exception: {e}")
-            if retry_count == Config.MAX_RETRIES:
-                error_msg = f"Exception creating mirror: {e}"
-                logger.error(f"❌ {error_msg}")
-                state.increment_mirrors_failed()
-                state.set_error(error_msg)
-                return False
+            # Don't log here, let circuit breaker handle it
+            if "Mirror creation failed" not in str(e) and "Timeout" not in str(e):
+                logger.warning(f"Attempt {retry_count + 1} raised exception: {e}")
+            raise
 
         # Exponential backoff before retry
         retry_count += 1
@@ -365,12 +454,278 @@ WITH (do_initial_copy = true);"""
             time.sleep(delay)
             delay *= Config.RETRY_BACKOFF
 
+    # All retries failed
+    state.increment_mirrors_failed()
+    state.set_error(f"Failed to create mirror after {Config.MAX_RETRIES + 1} attempts")
     return False
+
+
+def create_peerdb_mirror_with_retry(schema: str, table: str) -> bool:
+    """Create a PeerDB mirror with exponential backoff retry logic and circuit breaker protection."""
+    if peerdb_api_breaker:
+        try:
+            return peerdb_api_breaker.call(_create_mirror_internal, schema, table)
+        except CircuitBreakerOpenError:
+            logger.error(f"❌ Circuit breaker OPEN - PeerDB API unavailable")
+            state.set_error("Circuit breaker open - PeerDB API unavailable")
+            return False
+    else:
+        # No circuit breaker, call directly
+        return _create_mirror_internal(schema, table)
+
+
+# ============================================================
+# Mirror Deletion with Retry Logic and Circuit Breaker
+# ============================================================
+
+def _drop_mirror_internal(schema: str, table: str) -> bool:
+    """Internal mirror deletion without circuit breaker (called by circuit breaker)."""
+    mirror_name = f"{table}_mirror"
+
+    # Build the DROP MIRROR SQL
+    sql = f"DROP MIRROR {mirror_name};"
+
+    retry_count = 0
+    delay = Config.RETRY_DELAY
+
+    while retry_count <= Config.MAX_RETRIES:
+        try:
+            logger.info(f"Dropping mirror for {schema}.{table} (attempt {retry_count + 1}/{Config.MAX_RETRIES + 1})")
+
+            result = subprocess.run(
+                ["psql", "-h", Config.PEERDB_HOST, "-p", str(Config.PEERDB_PORT),
+                 "-U", Config.PEERDB_USER, "-c", sql],
+                env={**os.environ, "PGPASSWORD": Config.PEERDB_PASSWORD},
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            if result.returncode == 0:
+                logger.info(f"✅ Mirror dropped successfully: {mirror_name}")
+                state.set_error(None)
+                return True
+            else:
+                # Check if mirror doesn't exist (not an error)
+                if "does not exist" in result.stderr or "must acquire" in result.stderr:
+                    logger.info(f"ℹ️  Mirror does not exist or cannot be dropped: {mirror_name}")
+                    return True
+                else:
+                    error_msg = result.stderr.strip()
+                    logger.warning(f"Attempt {retry_count + 1} failed: {error_msg}")
+                    # Raise exception for circuit breaker to track
+                    raise Exception(f"Mirror drop failed: {error_msg}")
+
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Attempt {retry_count + 1} timed out")
+            raise Exception(f"Timeout dropping mirror for {table}")
+
+        except Exception as e:
+            # Don't log here, let circuit breaker handle it
+            if "Mirror drop failed" not in str(e) and "Timeout" not in str(e):
+                logger.warning(f"Attempt {retry_count + 1} raised exception: {e}")
+            raise
+
+        # Exponential backoff before retry
+        retry_count += 1
+        if retry_count <= Config.MAX_RETRIES:
+            logger.info(f"Retrying in {delay} seconds...")
+            time.sleep(delay)
+            delay *= Config.RETRY_BACKOFF
+
+    # All retries failed
+    state.set_error(f"Failed to drop mirror after {Config.MAX_RETRIES + 1} attempts")
+    return False
+
+
+def drop_peerdb_mirror_with_retry(schema: str, table: str) -> bool:
+    """Drop a PeerDB mirror with exponential backoff retry logic and circuit breaker protection."""
+    if peerdb_api_breaker:
+        try:
+            return peerdb_api_breaker.call(_drop_mirror_internal, schema, table)
+        except CircuitBreakerOpenError:
+            logger.error(f"❌ Circuit breaker OPEN - PeerDB API unavailable")
+            state.set_error("Circuit breaker open - PeerDB API unavailable")
+            return True  # Not critical if mirror drop fails
+    else:
+        # No circuit breaker, call directly
+        return _drop_mirror_internal(schema, table)
 
 
 # ============================================================
 # PostgreSQL Listener with Reconnect Logic
 # ============================================================
+
+def get_redis_client():
+    """Get or create Redis client for duplicate detection."""
+    try:
+        import redis
+        return redis.Redis(
+            host=Config.REDIS_HOST,
+            port=Config.REDIS_PORT,
+            password=Config.REDIS_PASSWORD,
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=5
+        )
+    except ImportError:
+        logger.warning("Redis not available, duplicate detection disabled")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to create Redis client: {e}")
+        return None
+
+_redis_client = None
+
+def is_duplicate_notification(notification_id: str) -> bool:
+    """Check if notification has already been processed."""
+    global _redis_client
+
+    if _redis_client is None:
+        _redis_client = get_redis_client()
+        if _redis_client is None:
+            return False  # No Redis, can't check for duplicates
+
+    try:
+        # Check if key exists
+        return _redis_client.exists(f"notification:{notification_id}") == 1
+    except Exception as e:
+        logger.warning(f"Redis error checking duplicate: {e}")
+        return False
+
+def mark_notification_processing(notification_id: str):
+    """Mark notification as currently being processed."""
+    global _redis_client
+
+    if _redis_client is None:
+        _redis_client = get_redis_client()
+        if _redis_client is None:
+            return  # No Redis, skip marking
+
+    try:
+        # Set with expiry of 5 minutes (in case processing fails)
+        _redis_client.setex(
+            f"notification:{notification_id}",
+            300,  # 5 minutes
+            "processing"
+        )
+    except Exception as e:
+        logger.warning(f"Redis error marking processing: {e}")
+
+def mark_notification_processed(notification_id: str):
+    """Mark notification as processed with longer expiry."""
+    global _redis_client
+
+    if _redis_client is None:
+        _redis_client = get_redis_client()
+        if _redis_client is None:
+            return  # No Redis, skip marking
+
+    try:
+        # Set with expiry of 24 hours
+        _redis_client.setex(
+            f"notification:{notification_id}",
+            86400,  # 24 hours
+            "processed"
+        )
+    except Exception as e:
+        logger.warning(f"Redis error marking processed: {e}")
+
+
+def verify_mirror_consistency(schema: str, table: str) -> bool:
+    """Verify data consistency after mirror creation with retry logic."""
+    logger.info(f"🔍 Verifying consistency for {schema}.{table}...")
+
+    # Wait briefly for initial replication
+    time.sleep(2)
+
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            # Get row counts
+            pg_count = _get_postgres_count(schema, table)
+            ch_count = _get_clickhouse_count(table)
+
+            if pg_count == ch_count:
+                logger.info(f"✅ Consistency verified: {schema}.{table} ({pg_count} rows)")
+                return True
+            else:
+                difference = pg_count - ch_count
+                if attempt < max_attempts - 1:
+                    logger.warning(
+                        f"⚠️  Consistency check failed (attempt {attempt + 1}/{max_attempts}): "
+                        f"PG={pg_count}, CH={ch_count}, diff={difference}. Retrying in 10s..."
+                    )
+                    time.sleep(10)
+                    continue
+                else:
+                    logger.error(
+                        f"❌ Consistency check failed after {max_attempts} attempts: "
+                        f"{schema}.{table} - PG={pg_count}, CH={ch_count}, diff={difference}"
+                    )
+                    state.set_error(f"Data consistency issue: {schema}.{table}")
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error checking consistency for {schema}.{table}: {e}")
+            if attempt < max_attempts - 1:
+                time.sleep(5)
+                continue
+            else:
+                logger.error(f"❌ Failed to verify consistency after {max_attempts} attempts")
+                return False
+
+    return True
+
+
+def _get_postgres_count(schema: str, table: str) -> int:
+    """Get row count from PostgreSQL."""
+    try:
+        conn = psycopg2.connect(
+            host=Config.PG_HOST,
+            port=Config.PG_PORT,
+            user=Config.PG_USER,
+            password=Config.PG_PASSWORD,
+            database=Config.PG_DATABASE,
+            connect_timeout=5
+        )
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT COUNT(*) FROM {schema}.{table}")
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else 0
+    except Exception as e:
+        logger.error(f"Failed to get PostgreSQL count: {e}")
+        return 0
+
+
+def _get_clickhouse_count(table: str) -> int:
+    """Get row count from ClickHouse."""
+    try:
+        import clickhouse_connect
+        client = clickhouse_connect.get_client(
+            host=Config.CLICKHOUSE_HOST,
+            port=Config.CLICKHOUSE_PORT,
+            user=Config.CLICKHOUSE_USER,
+            password=Config.CLICKHOUSE_PASSWORD
+        )
+
+        # Try different table name formats
+        for table_name in [table, f"postgres.{table}"]:
+            try:
+                result = client.query(f"SELECT COUNT(*) AS count FROM {table_name}")
+                if result.result_rows:
+                    client.close()
+                    return result.result_rows[0][0]
+            except:
+                continue
+
+        client.close()
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to get ClickHouse count: {e}")
+        return 0
+
 
 def connect_to_postgresql():
     """Connect to PostgreSQL with retry logic."""
@@ -410,16 +765,57 @@ def connect_to_postgresql():
 
 
 def listen_for_tables(shutdown_event: threading.Event):
-    """Listen for PostgreSQL table creation notifications with auto-reconnect."""
+    """Listen for PostgreSQL table creation notifications with auto-reconnect and leader election."""
     excluded_tables = Config.get_excluded_tables()
+    sync_schemas = Config.get_sync_schemas()
 
+    # Initialize leader election
+    worker_id = Config.WORKER_ID or f"worker-{uuid.uuid4().hex[:8]}"
+    leader_election = None
+
+    if LeaderElection:
+        try:
+            leader_election = LeaderElection(
+                redis_host=Config.REDIS_HOST,
+                redis_port=Config.REDIS_PORT,
+                worker_id=worker_id,
+                ttl=Config.LEADER_ELECTION_TTL,
+                redis_password=Config.REDIS_PASSWORD
+            )
+            state._leader_election = leader_election
+            state._worker_id = worker_id
+            logger.info(f"Worker ID: {worker_id}")
+            logger.info(f"Leader election enabled (TTL={Config.LEADER_ELECTION_TTL}s)")
+        except Exception as e:
+            logger.warning(f"Failed to initialize leader election: {e}")
+            logger.info("Running in single-instance mode")
+    else:
+        logger.info("Leader election not available, running in single-instance mode")
+
+    # Main loop - handle both leader election and PostgreSQL listening
     while not shutdown_event.is_set():
+        # Check if we should be leader
+        if leader_election:
+            if not leader_election.acquire_leadership():
+                # Not the leader - wait and retry
+                logger.info(f"⏳ Worker {worker_id} is follower, waiting for leadership...")
+                state.connected = False
+                shutdown_event.wait(Config.LEADER_ELECTION_INTERVAL)
+                continue
+
+            # We are the leader
+            logger.info(f"✅ Worker {worker_id} is now the leader")
+            state.connected = True
+
+        # Connect to PostgreSQL and process notifications
         conn = None
         try:
             # Connect to PostgreSQL
             conn = connect_to_postgresql()
             if conn is None:
                 logger.error("Cannot proceed without PostgreSQL connection. Exiting...")
+                if leader_election:
+                    leader_election.relinquish_leadership()
                 break
 
             cursor = conn.cursor()
@@ -428,19 +824,22 @@ def listen_for_tables(shutdown_event: threading.Event):
             logger.info("=" * 60)
             logger.info("EchoDB Auto-Mirror Worker Configuration")
             logger.info("=" * 60)
+            logger.info(f"Worker ID:      {worker_id}")
+            logger.info(f"Mode:           {'HA (Leader)' if leader_election else 'Single Instance'}")
             logger.info(f"PostgreSQL:     {Config.PG_USER}@{Config.PG_HOST}:{Config.PG_PORT}/{Config.PG_DATABASE}")
             logger.info(f"PeerDB:         {Config.PEERDB_USER}@{Config.PEERDB_HOST}:{Config.PEERDB_PORT}")
             logger.info(f"Source Peer:    {Config.SOURCE_PEER_NAME}")
             logger.info(f"Target Peer:    {Config.TARGET_PEER_NAME}")
-            logger.info(f"Schema:         {Config.SCHEMA_NAME}")
+            logger.info(f"Schemas:        {', '.join(sorted(sync_schemas))}")
             logger.info(f"Excluded:       {len(excluded_tables)} tables")
             logger.info(f"Max Retries:    {Config.MAX_RETRIES}")
             logger.info(f"Reconnect Delay:{Config.RECONNECT_DELAY}s")
             logger.info("=" * 60)
 
-            # Start listening
+            # Start listening for both create and drop events
             cursor.execute("LISTEN peerdb_create_mirror")
-            logger.info("🎧 Listening for table creation events...")
+            cursor.execute("LISTEN peerdb_drop_mirror")
+            logger.info("🎧 Listening for table creation and deletion events...")
 
             while not shutdown_event.is_set():
                 try:
@@ -455,24 +854,51 @@ def listen_for_tables(shutdown_event: threading.Event):
                                 schema = payload.get("schema")
                                 table = payload.get("table")
 
-                                logger.info(f"📢 Notification received: {schema}.{table}")
+                                logger.info(f"📢 Notification received on channel '{notify.channel}': {schema}.{table}")
 
-                                # Only process tables from the configured schema
-                                if schema != Config.SCHEMA_NAME:
-                                    logger.debug(f"Skipping table from different schema: {schema}.{table}")
+                                # Only process tables from the configured schemas
+                                if schema not in sync_schemas:
+                                    logger.debug(f"Skipping table from different schema: {schema}.{table} (not in {sync_schemas})")
                                     continue
 
-                                # Skip excluded tables
-                                if table in excluded_tables:
+                                # Skip excluded tables (for creation only)
+                                if notify.channel == 'peerdb_create_mirror' and table in excluded_tables:
                                     logger.info(f"⏭️  Skipping excluded table: {table}")
                                     continue
 
                                 # Update state
                                 state.last_notification = datetime.now()
 
-                                # Create mirror for the new table
-                                logger.info(f"🔨 Processing new table: {schema}.{table}")
-                                create_peerdb_mirror_with_retry(schema, table)
+                                # Check for duplicate notifications (prevent double processing)
+                                notification_id = f"{notify.channel}:{schema}.{table}:{notify.pid}"
+                                if is_duplicate_notification(notification_id):
+                                    logger.debug(f"⏭️  Skipping duplicate notification: {notification_id}")
+                                    continue
+
+                                # Mark notification as being processed
+                                mark_notification_processing(notification_id)
+
+                                # Process based on notification channel
+                                try:
+                                    if notify.channel == 'peerdb_create_mirror':
+                                        # Create mirror for the new table
+                                        logger.info(f"🔨 Processing new table: {schema}.{table}")
+                                        success = create_peerdb_mirror_with_retry(schema, table)
+
+                                        # Verify data consistency after mirror creation
+                                        if success:
+                                            verify_mirror_consistency(schema, table)
+
+                                    elif notify.channel == 'peerdb_drop_mirror':
+                                        # Drop mirror for the deleted table
+                                        logger.info(f"🗑️  Processing dropped table: {schema}.{table}")
+                                        success = drop_peerdb_mirror_with_retry(schema, table)
+                                    else:
+                                        logger.warning(f"Unknown notification channel: {notify.channel}")
+                                        success = True  # Don't retry unknown channels
+                                finally:
+                                    # Mark notification as processed (with expiry)
+                                    mark_notification_processed(notification_id)
 
                             except json.JSONDecodeError as e:
                                 logger.error(f"Failed to parse notification payload: {e}")
@@ -509,10 +935,20 @@ def listen_for_tables(shutdown_event: threading.Event):
                 except:
                     pass
 
+            # Relinquish leadership if we lose PostgreSQL connection
+            if leader_election and leader_election.is_leader:
+                logger.info("Relinquishing leadership due to connection loss")
+                leader_election.relinquish_leadership()
+
         # Don't reconnect if we're shutting down
         if not shutdown_event.is_set():
             logger.info(f"Reconnecting in {Config.RECONNECT_DELAY} seconds...")
             shutdown_event.wait(Config.RECONNECT_DELAY)
+
+    # Cleanup leader election on shutdown
+    if leader_election:
+        logger.info("Stopping leader election...")
+        leader_election.stop()
 
 
 # ============================================================

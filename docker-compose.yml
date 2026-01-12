@@ -13,7 +13,7 @@ x-minio-config: &minio-config
 # Shared catalog config (PeerDB metadata PostgreSQL)
 x-catalog-config: &catalog-config
   PEERDB_CATALOG_HOST: ${PEERDB_CATALOG_HOST:-catalog}
-  PEERDB_CATALOG_PORT: ${PEERDB_CATALOG_PORT:-5432}
+  PEERDB_CATALOG_PORT: 5432
   PEERDB_CATALOG_USER: ${PEERDB_CATALOG_USER:-postgres}
   PEERDB_CATALOG_PASSWORD: ${PEERDB_CATALOG_PASSWORD:-postgres}
   PEERDB_CATALOG_DATABASE: ${PEERDB_CATALOG_DATABASE:-postgres}
@@ -53,6 +53,17 @@ x-auto-mirror-config: &auto-mirror-config
   LOG_FILE: ${LOG_FILE:-/var/log/echodb/auto-mirror.log}
   HEALTH_CHECK_PORT: ${HEALTH_CHECK_PORT:-8080}
   HEALTH_CHECK_HOST: ${HEALTH_CHECK_HOST:-0.0.0.0}
+  REDIS_HOST: ${REDIS_HOST:-redis}
+  REDIS_PORT: ${REDIS_PORT:-6379}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-password}
+  LEADER_ELECTION_TTL: ${LEADER_ELECTION_TTL:-30}
+  LEADER_ELECTION_INTERVAL: ${LEADER_ELECTION_INTERVAL:-10}
+  PEERDB_FAILURE_THRESHOLD: ${PEERDB_FAILURE_THRESHOLD:-5}
+  PEERDB_SUCCESS_THRESHOLD: ${PEERDB_SUCCESS_THRESHOLD:-2}
+  PEERDB_TIMEOUT: ${PEERDB_TIMEOUT:-60}
+  POSTGRES_FAILURE_THRESHOLD: ${POSTGRES_FAILURE_THRESHOLD:-3}
+  POSTGRES_SUCCESS_THRESHOLD: ${POSTGRES_SUCCESS_THRESHOLD:-2}
+  POSTGRES_TIMEOUT: ${POSTGRES_TIMEOUT:-30}
 
 services:
   # Application PostgreSQL
@@ -87,7 +98,14 @@ services:
   redis:
     image: redis:${REDIS_VERSION:-7.4-alpine}
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-redis}" ]
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--requirepass",
+        "${REDIS_PASSWORD:-redis}",
+      ]
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -128,7 +146,15 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "pg_isready", "-d", "${PEERDB_CATALOG_DATABASE:-postgres}", "-U", "${PEERDB_CATALOG_USER:-postgres}"]
+      test:
+        [
+          "CMD",
+          "pg_isready",
+          "-d",
+          "${PEERDB_CATALOG_DATABASE:-postgres}",
+          "-U",
+          "${PEERDB_CATALOG_USER:-postgres}",
+        ]
       interval: 10s
       timeout: 30s
       retries: 5
@@ -280,16 +306,16 @@ services:
     depends_on:
       - flow-api
 
-  # Auto-Mirror Worker (Production-Ready)
+  # Auto-Mirror Worker - Instance 1 (Production-Ready HA)
   # Automatically creates PeerDB mirrors for new PostgreSQL tables
-  # Features: retry logic, auto-reconnect, health checks, log rotation
-  auto-mirror-worker:
+  # Features: leader election, retry logic, auto-reconnect, health checks, log rotation
+  auto-mirror-worker-1:
     image: python:3.12-slim
     restart: unless-stopped
     working_dir: /app
     command: >
       bash -c "
-      pip install --no-cache-dir -q psycopg2-binary &&
+      pip install --no-cache-dir -q psycopg2-binary redis &&
       python scripts/auto-mirror-worker.py
       "
     volumes:
@@ -297,12 +323,20 @@ services:
       - echodb_auto_mirror_logs:/var/log/echodb
     environment:
       <<: *auto-mirror-config
+      WORKER_ID: worker-1
+      HEALTH_CHECK_PORT: 8080
     ports:
-      - "${HEALTH_CHECK_PORT:-8080}:8080"
+      - "8080:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health').read()"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8080/health').read()",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -312,6 +346,127 @@ services:
         condition: service_healthy
       peerdb:
         condition: service_started
+      redis:
+        condition: service_started
+      auto-setup:
+        condition: service_completed_successfully
+
+  # Auto-Mirror Worker - Instance 2 (Production-Ready HA)
+  auto-mirror-worker-2:
+    image: python:3.12-slim
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      bash -c "
+      pip install --no-cache-dir -q psycopg2-binary redis &&
+      python scripts/auto-mirror-worker.py
+      "
+    volumes:
+      - ./scripts:/app/scripts
+      - echodb_auto_mirror_logs:/var/log/echodb
+    environment:
+      <<: *auto-mirror-config
+      WORKER_ID: worker-2
+      HEALTH_CHECK_PORT: 8081
+    ports:
+      - "8081:8081"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8081/health').read()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      peerdb:
+        condition: service_started
+      redis:
+        condition: service_started
+      auto-setup:
+        condition: service_completed_successfully
+
+  # Auto-Setup Service (Runs once on startup)
+  # Automatically installs PostgreSQL triggers and creates PeerDB peers
+  auto-setup:
+    image: postgres:${POSTGRES_VERSION:-17-alpine}
+    restart: "no"
+    volumes:
+      - ./scripts:/app/scripts
+      - ./scripts/.env:/app/.env:ro
+    environment:
+      <<: *auto-mirror-config
+    command: >
+      bash -c "
+      echo 'Starting EchoDB automated setup...' &&
+      apk add --no-cache clickhouse-client postgresql-client &&
+      bash /app/scripts/auto-setup.sh
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+      peerdb:
+        condition: service_started
+      clickhouse:
+        condition: service_healthy
+
+  # Data Consistency Checker Service
+  # Verifies data consistency between PostgreSQL and ClickHouse
+  # Provides HTTP endpoints for on-demand consistency checks
+  consistency-checker:
+    image: python:3.12-slim
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      bash -c "
+      pip install --no-cache-dir -q psycopg2-binary clickhouse-connect &&
+      python scripts/data_consistency_checker.py
+      "
+    volumes:
+      - ./scripts:/app/scripts
+    environment:
+      <<: *auto-mirror-config
+      CONSISTENCY_CHECK_INTERVAL: ${CONSISTENCY_CHECK_INTERVAL:-900}
+      CONSISTENCY_CHECKER_PORT: ${CONSISTENCY_CHECKER_PORT:-8090}
+      CONSISTENCY_CHECKER_HOST: ${CONSISTENCY_CHECKER_HOST:-0.0.0.0}
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-clickhouse}
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-default}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-default}
+    ports:
+      - "${CONSISTENCY_CHECKER_PORT:-8090}:8090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8090/health').read()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      peerdb:
+        condition: service_started
+      auto-setup:
+        condition: service_completed_successfully
 
 volumes:
   echodb_postgres_data:
